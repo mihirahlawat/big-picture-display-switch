@@ -29,8 +29,8 @@ EXIT_DEBOUNCE_MS   := 2500
 RETRY_DELAY_MS     := 5000
 MAX_RETRIES        := 2
 AUDIO_DEVICE_WAIT_MS := 10000
-DISPLAY_VERIFY_TIMEOUT_MS := 2000
-DISPLAY_WAKE_SETTLE_MS := 4000
+DISPLAY_VERIFY_TIMEOUT_MS := 800
+DISPLAY_WAKE_SETTLE_MS := 1500
 
 ; Runtime state. -1 means that the initial state has not been established yet.
 StableBigPicture := -1
