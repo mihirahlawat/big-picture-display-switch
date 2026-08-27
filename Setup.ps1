@@ -54,6 +54,55 @@ function Read-YesNo {
     }
 }
 
+function Get-IniValue {
+    param(
+        [string]$Section,
+        [string]$Key,
+        [string]$Default = ''
+    )
+
+    if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) {
+        return $Default
+    }
+
+    $inRequestedSection = $false
+    $sectionPattern = '^\s*\[{0}\]\s*$' -f [regex]::Escape($Section)
+    $keyPattern = '^\s*{0}\s*=\s*(.*)$' -f [regex]::Escape($Key)
+    foreach ($line in Get-Content -LiteralPath $configFile) {
+        if ($line -match '^\s*\[.*\]\s*$') {
+            $inRequestedSection = $line -match $sectionPattern
+            continue
+        }
+        if ($inRequestedSection -and $line -match $keyPattern) {
+            return $Matches[1]
+        }
+    }
+    return $Default
+}
+
+function Write-Configuration {
+    param(
+        [ValidateSet('External', 'Extend', 'None')]
+        [string]$WakeMode,
+        [ValidateSet(0, 1)]
+        [int]$AudioEnabled,
+        [string]$TvDeviceId,
+        [string]$TvDeviceLabel
+    )
+
+    $contents = @(
+        '[Display]',
+        ('WakeMode={0}' -f $WakeMode),
+        '',
+        '[Audio]',
+        ('Enabled={0}' -f $AudioEnabled),
+        ('TvDeviceId={0}' -f $TvDeviceId),
+        ('TvDeviceLabel={0}' -f $TvDeviceLabel)
+    )
+    Set-Content -LiteralPath $configFile -Value $contents -Encoding UTF8
+    Write-Host "Configuration saved: $configFile" -ForegroundColor Green
+}
+
 function Get-AutoHotkeyPath {
     $candidates = @(
         (Join-Path $env:ProgramFiles 'AutoHotkey\v2\AutoHotkey64.exe'),
@@ -224,6 +273,38 @@ function Capture-DisplayProfiles {
         )
 }
 
+function Configure-DisplayRecovery {
+    Write-Section 'Choose the display recovery topology'
+    Write-Host 'This is used only if Windows ignores a MultiMonitorTool profile load.'
+    Write-Host '  [1] External - briefly enable external displays only; keeps the laptop panel off.'
+    Write-Host '  [2] Extend   - briefly enable every connected display, including an internal panel.'
+    Write-Host '  [3] None     - disable the native Windows recovery fallback.'
+
+    while ($true) {
+        $selection = (Read-Host 'Choose 1, 2, or 3 [1]').Trim()
+        if ([string]::IsNullOrWhiteSpace($selection)) {
+            $selection = '1'
+        }
+        if ($selection -in @('1', '2', '3')) {
+            break
+        }
+    }
+
+    $wakeMode = switch ($selection) {
+        '1' { 'External' }
+        '2' { 'Extend' }
+        '3' { 'None' }
+    }
+    $audioEnabled = if ((Get-IniValue -Section 'Audio' -Key 'Enabled' -Default '0') -eq '1') { 1 } else { 0 }
+    $tvDeviceId = Get-IniValue -Section 'Audio' -Key 'TvDeviceId'
+    $tvDeviceLabel = Get-IniValue -Section 'Audio' -Key 'TvDeviceLabel' -Default 'TV audio'
+    Write-Configuration `
+        -WakeMode $wakeMode `
+        -AudioEnabled $audioEnabled `
+        -TvDeviceId $tvDeviceId `
+        -TvDeviceLabel $tvDeviceLabel
+}
+
 function Get-RenderAudioDevices {
     if (-not (Test-Path -LiteralPath $soundVolumeView -PathType Leaf)) {
         throw 'SoundVolumeView is missing. Run Setup.ps1 -Mode Dependencies first.'
@@ -256,26 +337,25 @@ function Get-RenderAudioDevices {
 function Write-AudioConfiguration {
     param([AllowNull()]$Device)
 
+    $wakeMode = Get-IniValue -Section 'Display' -Key 'WakeMode' -Default 'External'
+    if ($wakeMode -notin @('External', 'Extend', 'None')) {
+        $wakeMode = 'External'
+    }
     if ($null -eq $Device) {
-        $contents = @(
-            '[Audio]',
-            'Enabled=0',
-            'TvDeviceId=',
-            'TvDeviceLabel=TV audio'
-        )
+        Write-Configuration `
+            -WakeMode $wakeMode `
+            -AudioEnabled 0 `
+            -TvDeviceId '' `
+            -TvDeviceLabel 'TV audio'
     }
     else {
         $label = ('{0} ({1})' -f $Device.Name, $Device.'Device Name').Replace("`r", ' ').Replace("`n", ' ')
-        $contents = @(
-            '[Audio]',
-            'Enabled=1',
-            ('TvDeviceId={0}' -f $Device.'Item ID'),
-            ('TvDeviceLabel={0}' -f $label)
-        )
+        Write-Configuration `
+            -WakeMode $wakeMode `
+            -AudioEnabled 1 `
+            -TvDeviceId $Device.'Item ID' `
+            -TvDeviceLabel $label
     }
-
-    Set-Content -LiteralPath $configFile -Value $contents -Encoding UTF8
-    Write-Host "Audio configuration saved: $configFile" -ForegroundColor Green
 }
 
 function Configure-TVAudio {
@@ -371,6 +451,7 @@ if ($Mode -in @('Full', 'Dependencies')) {
 try {
     if ($Mode -in @('Full', 'Profiles')) {
         Capture-DisplayProfiles
+        Configure-DisplayRecovery
         $tvProfileIsActive = $true
     }
 

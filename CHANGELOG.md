@@ -5,6 +5,10 @@
 - Verify the live display topology after every MultiMonitorTool profile load.
 - Recover from false-success loads by waking outputs with Windows DisplaySwitch
   and retrying the requested profile.
+- Add configurable External, Extend, and None recovery modes; External keeps a
+  laptop panel off when switching between two external displays.
+- Preserve and restore the normal Steam desktop window rectangle around Big
+  Picture transitions, clamped to the desktop monitor's work area.
 
 ## 0.2.0 - 2026-08-27
 

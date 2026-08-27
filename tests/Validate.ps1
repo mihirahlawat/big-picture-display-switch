@@ -70,7 +70,7 @@ foreach ($file in $powershellFiles) {
 $configExample = Join-Path $root 'Config.example.ini'
 if (Test-Path -LiteralPath $configExample) {
     $configText = Get-Content -LiteralPath $configExample -Raw
-    foreach ($requiredSetting in '[Audio]', 'Enabled=', 'TvDeviceId=', 'TvDeviceLabel=') {
+    foreach ($requiredSetting in '[Display]', 'WakeMode=', '[Audio]', 'Enabled=', 'TvDeviceId=', 'TvDeviceLabel=') {
         if ($configText.Contains($requiredSetting)) {
             Add-Success "Config example contains $requiredSetting"
         }
@@ -149,4 +149,3 @@ if ($failures.Count -gt 0) {
 
 Write-Host ''
 Write-Host 'All validations passed.' -ForegroundColor Green
-

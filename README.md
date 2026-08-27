@@ -24,8 +24,10 @@ setup.
 - Recovers after Steam crashes and after missed Windows shell events.
 - Logs every confirmed transition and profile/audio action.
 - Verifies the live topology after MultiMonitorTool returns instead of trusting
-  its exit code alone. If Windows ignores a profile, the watcher wakes connected
-  outputs with the native `DisplaySwitch.exe /extend` command and retries once.
+  its exit code alone. If Windows ignores a profile, the watcher uses the chosen
+  native Windows wake topology and retries once.
+- Preserves the normal Steam desktop window rectangle before Big Picture and
+  restores it within the desktop monitor's work area afterward.
 - Runs as the signed-in user without administrator privileges.
 
 ## Quick start
@@ -38,6 +40,7 @@ setup.
    - download MultiMonitorTool and SoundVolumeView directly from NirSoft;
    - offer to install AutoHotkey v2 through `winget`;
    - walk through capturing the Desktop and TV display profiles;
+   - ask whether recovery should wake external displays, every display, or none;
    - list Windows playback endpoints and ask which one belongs to the TV;
    - restore the desktop layout;
    - offer to install the per-user login task and start the watcher.
@@ -45,8 +48,29 @@ setup.
 5. Enter and exit Big Picture once, then inspect
    `Logs\SteamDisplaySwitch.log`.
 
-The wizard intentionally cannot guess which physical monitor or audio endpoint a
-user means. Those two choices are the only genuinely machine-specific setup.
+The wizard intentionally cannot guess which physical monitors, recovery topology,
+or audio endpoint a user means. Those are the genuinely machine-specific setup
+choices.
+
+## Display recovery mode
+
+MultiMonitorTool can occasionally return exit code 0 even though Windows leaves
+the previous single-display topology active. The watcher verifies the result and
+uses the configured `[Display] WakeMode` only after such a mismatch:
+
+- `External` runs `DisplaySwitch.exe /external`, briefly enabling external
+  outputs while keeping a laptop/internal panel disabled. This is the recommended
+  mode when both saved profiles target external monitors.
+- `Extend` runs `DisplaySwitch.exe /extend`, briefly enabling every connected
+  display. Use this when either saved profile targets an internal panel, or when
+  `External` cannot wake the intended output.
+- `None` disables this native recovery step.
+
+An intermediate MultiMonitorTool profile is not required and would not reliably
+solve a failure in MultiMonitorTool's own profile loader. The final saved profile
+still determines exactly which monitor remains active. Systems with additional
+external displays that must never wake may need a selective profile backend such
+as DisplayMagician.
 
 To run a particular setup section again:
 
@@ -162,7 +186,7 @@ Steam Big Picture Display Switch\
   Start-Setup.cmd                    double-click setup entry point
   Install-LoginTask.ps1              Task Scheduler installer/remover
   Config.example.ini                 documented config shape
-  Config.ini                         local TV audio ID; ignored by Git
+  Config.ini                         local recovery/audio choices; ignored by Git
   Profiles\
     Desktop.cfg                      local; ignored by Git
     TV.cfg                           local; ignored by Git
@@ -227,8 +251,8 @@ Some GPU/USB-C combinations return exit code 0 while leaving the previous
 single-display topology unchanged. The watcher detects this by exporting the
 live monitor state and comparing the active monitor ID, primary state,
 resolution, and refresh rate with the requested profile. Only after a mismatch
-does it briefly use Windows' native `/extend` topology to wake the outputs and
-then reapply the requested single-display profile.
+does it briefly use the configured native Windows wake topology and then reapply
+the requested single-display profile.
 
 ## Troubleshooting
 

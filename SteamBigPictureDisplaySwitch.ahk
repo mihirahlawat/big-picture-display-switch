@@ -16,10 +16,12 @@ AUDIO_STATE_FILE   := A_ScriptDir "\State\DesktopAudio.ini"
 AUDIO_ENABLED      := IniRead(CONFIG_FILE, "Audio", "Enabled", "0") = "1"
 TV_AUDIO_DEVICE_ID := IniRead(CONFIG_FILE, "Audio", "TvDeviceId", "")
 TV_AUDIO_LABEL     := IniRead(CONFIG_FILE, "Audio", "TvDeviceLabel", "TV audio")
+DISPLAY_WAKE_MODE  := StrLower(IniRead(CONFIG_FILE, "Display", "WakeMode", "External"))
 
 BIG_PICTURE_EXE    := "steamwebhelper.exe"
 BIG_PICTURE_CLASS  := "SDL_app"
 BIG_PICTURE_TITLE  := "Steam Big Picture Mode"
+STEAM_DESKTOP_TITLE := "Steam"
 
 STARTUP_DELAY_MS   := 4000
 WATCHDOG_MS        := 2000
@@ -42,6 +44,7 @@ RetryCount := 0
 AudioRetryCount := 0
 ShellHookRegistered := false
 ShellMessageNumber := 0
+SteamDesktopPlacement := ""
 
 Persistent
 DetectHiddenWindows True
@@ -183,6 +186,8 @@ ApplyProfileForCurrentState(reason, force := false) {
     global StableBigPicture, AudioRetryCount
 
     if (StableBigPicture) {
+        if (InStr(reason, "transition 0->1"))
+            CaptureSteamDesktopWindowPlacement()
         ; Snapshot before the display switch can make Windows automatically pick
         ; the HDMI endpoint. An existing snapshot is never overwritten.
         audioSnapshotReady := CaptureDesktopAudioDefaults()
@@ -199,7 +204,13 @@ ApplyProfileForCurrentState(reason, force := false) {
     AudioRetryCount := 0
     ; Restore while the TV endpoint still exists, then disable the TV display.
     RestoreDesktopAudioDefaults()
-    return ApplyProfile("Desktop", reason, force)
+    displayApplied := ApplyProfile("Desktop", reason, force)
+    if (displayApplied) {
+        RestoreOrClampSteamDesktopWindow()
+        ; Steam can update its normal window shortly after Big Picture exits.
+        SetTimer RestoreOrClampSteamDesktopWindow, -1500
+    }
+    return displayApplied
 }
 
 ApplyProfile(profileKey, reason, force := false) {
@@ -276,19 +287,139 @@ ApplyProfile(profileKey, reason, force := false) {
 }
 
 WakeDisplaysForProfileRetry(profileKey) {
-    global DISPLAY_WAKE_SETTLE_MS
+    global DISPLAY_WAKE_SETTLE_MS, DISPLAY_WAKE_MODE
 
     displaySwitch := A_WinDir "\System32\DisplaySwitch.exe"
     if (!FileExist(displaySwitch))
         throw Error(Format("Windows DisplaySwitch.exe was not found at: {1}", displaySwitch))
 
+    switch DISPLAY_WAKE_MODE {
+        case "external":
+            topologyArgument := "/external"
+            topologyDescription := "external displays only"
+        case "extend":
+            topologyArgument := "/extend"
+            topologyDescription := "all connected displays"
+        case "none":
+            throw Error("The display wake-up fallback is disabled in Config.ini.")
+        default:
+            throw Error(Format(
+                "Unknown Display WakeMode '{1}'. Use External, Extend, or None.",
+                DISPLAY_WAKE_MODE))
+    }
+
     Log(Format(
-        "Waking connected displays with DisplaySwitch.exe /extend before retrying {1} profile.",
-        profileKey), "WARN")
-    exitCode := RunWait(Format('"{1}" /extend', displaySwitch), A_ScriptDir, "Hide")
+        "Waking {1} with DisplaySwitch.exe {2} before retrying {3} profile.",
+        topologyDescription, topologyArgument, profileKey), "WARN")
+    exitCode := RunWait(Format('"{1}" {2}', displaySwitch, topologyArgument),
+        A_ScriptDir, "Hide")
     if (exitCode != 0)
-        throw Error(Format("DisplaySwitch.exe /extend exited with code {1}.", exitCode))
+        throw Error(Format("DisplaySwitch.exe {1} exited with code {2}.",
+            topologyArgument, exitCode))
     Sleep DISPLAY_WAKE_SETTLE_MS
+}
+
+FindSteamDesktopWindow() {
+    global BIG_PICTURE_EXE, BIG_PICTURE_CLASS, STEAM_DESKTOP_TITLE
+
+    for windowHandle in WinGetList() {
+        selector := "ahk_id " windowHandle
+        try {
+            if (StrLower(WinGetProcessName(selector)) != StrLower(BIG_PICTURE_EXE))
+                continue
+            if (WinGetClass(selector) != BIG_PICTURE_CLASS)
+                continue
+            if (WinGetTitle(selector) != STEAM_DESKTOP_TITLE)
+                continue
+            return windowHandle
+        } catch {
+            continue
+        }
+    }
+    return 0
+}
+
+CaptureSteamDesktopWindowPlacement() {
+    global SteamDesktopPlacement
+
+    windowHandle := FindSteamDesktopWindow()
+    if (!windowHandle)
+        return false
+
+    selector := "ahk_id " windowHandle
+    try {
+        WinGetPos &x, &y, &width, &height, selector
+        if (width <= 0 || height <= 0)
+            return false
+        SteamDesktopPlacement := Map(
+            "X", x,
+            "Y", y,
+            "Width", width,
+            "Height", height,
+            "State", WinGetMinMax(selector))
+        Log(Format("Captured Steam desktop window placement: {1}x{2} at {3},{4}.",
+            width, height, x, y))
+        return true
+    } catch as errorObject {
+        Log(Format("Could not capture the Steam desktop window placement: {1}",
+            errorObject.Message), "WARN")
+        return false
+    }
+}
+
+RestoreOrClampSteamDesktopWindow(*) {
+    global SteamDesktopPlacement
+
+    windowHandle := FindSteamDesktopWindow()
+    if (!windowHandle)
+        return false
+
+    selector := "ahk_id " windowHandle
+    try {
+        WinGetPos &currentX, &currentY, &currentWidth, &currentHeight, selector
+        if (currentWidth <= 0 || currentHeight <= 0)
+            return false
+
+        if (IsObject(SteamDesktopPlacement)) {
+            desiredX := SteamDesktopPlacement["X"]
+            desiredY := SteamDesktopPlacement["Y"]
+            desiredWidth := SteamDesktopPlacement["Width"]
+            desiredHeight := SteamDesktopPlacement["Height"]
+            previousState := SteamDesktopPlacement["State"]
+        } else {
+            desiredX := currentX
+            desiredY := currentY
+            desiredWidth := currentWidth
+            desiredHeight := currentHeight
+            previousState := WinGetMinMax(selector)
+        }
+
+        primaryMonitor := MonitorGetPrimary()
+        MonitorGetWorkArea primaryMonitor, &workLeft, &workTop, &workRight, &workBottom
+        workWidth := workRight - workLeft
+        workHeight := workBottom - workTop
+        desiredWidth := Min(desiredWidth, workWidth)
+        desiredHeight := Min(desiredHeight, workHeight)
+        desiredX := Max(workLeft, Min(desiredX, workRight - desiredWidth))
+        desiredY := Max(workTop, Min(desiredY, workBottom - desiredHeight))
+
+        if (previousState = 1) {
+            WinMaximize selector
+            return true
+        }
+
+        if (currentX != desiredX || currentY != desiredY
+            || currentWidth != desiredWidth || currentHeight != desiredHeight) {
+            WinMove desiredX, desiredY, desiredWidth, desiredHeight, selector
+            Log(Format("Restored Steam desktop window to {1}x{2} at {3},{4}.",
+                desiredWidth, desiredHeight, desiredX, desiredY))
+        }
+        return true
+    } catch as errorObject {
+        Log(Format("Could not restore the Steam desktop window placement: {1}",
+            errorObject.Message), "WARN")
+        return false
+    }
 }
 
 WaitForDisplayProfile(profilePath, timeoutMs, &detail) {
