@@ -1,0 +1,78 @@
+name: Bug report
+description: Report an incorrect display, audio, detection, or setup behavior.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please review logs and configuration for usernames, paths, and device IDs before posting them.
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: input
+    id: steam
+    attributes:
+      label: Steam channel/version
+      placeholder: Stable or Beta, plus build date if known
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Display and audio hardware
+      description: Include GPU, connection types, intended desktop display, TV, and TV audio endpoint.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Big Picture detection
+        - Display profile
+        - Audio switching/restoration
+        - Setup wizard
+        - Login task
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant sanitized log lines
+      render: text
+
+  - type: checkboxes
+    id: manual
+    attributes:
+      label: Manual checks
+      options:
+        - label: Both MultiMonitorTool profiles work when loaded manually.
+        - label: I reran `Setup.ps1 -Mode Audio` after any audio-driver or HDMI-port change.
+        - label: Steam Big Picture Preferred Display is set to None.
+

@@ -1,0 +1,44 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download temporary AutoHotkey v2 validator
+        id: autohotkey
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'AutoHotkey-v2'
+          $archive = Join-Path $env:RUNNER_TEMP 'AutoHotkey-v2.zip'
+          Invoke-WebRequest `
+            -Uri 'https://www.autohotkey.com/download/ahk-v2.zip' `
+            -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force
+          $executable = Get-ChildItem `
+            -LiteralPath $destination `
+            -Recurse `
+            -Filter 'AutoHotkey64.exe' |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $executable) {
+            throw 'AutoHotkey64.exe was not found in the official archive.'
+          }
+          "executable=$executable" >> $env:GITHUB_OUTPUT
+
+      - name: Validate PowerShell and AutoHotkey sources
+        shell: powershell
+        run: |
+          .\tests\Validate.ps1 -AutoHotkeyExe '${{ steps.autohotkey.outputs.executable }}'
+

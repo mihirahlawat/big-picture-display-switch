@@ -1,0 +1,8 @@
+Logs/
+State/
+Config.ini
+Tools/MultiMonitorTool.exe
+Tools/MultiMonitorTool.cfg
+Tools/SoundVolumeView.exe
+Profiles/*.cfg
+!Profiles/.gitkeep
