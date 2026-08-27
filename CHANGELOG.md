@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Verify the live display topology after every MultiMonitorTool profile load.
+- Recover from false-success loads by waking outputs with Windows DisplaySwitch
+  and retrying the requested profile.
+
 ## 0.2.0 - 2026-08-27
 
 - Added dynamic desktop audio snapshot and restoration.
@@ -15,4 +21,3 @@
 - Added event-driven Steam Big Picture detection with watchdog fallback.
 - Added transition debouncing, MultiMonitorTool profiles, logging, retries, and
   Task Scheduler startup.
-

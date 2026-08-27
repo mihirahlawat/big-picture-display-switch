@@ -29,6 +29,8 @@ EXIT_DEBOUNCE_MS   := 2500
 RETRY_DELAY_MS     := 5000
 MAX_RETRIES        := 2
 AUDIO_DEVICE_WAIT_MS := 10000
+DISPLAY_VERIFY_TIMEOUT_MS := 2000
+DISPLAY_WAKE_SETTLE_MS := 4000
 
 ; Runtime state. -1 means that the initial state has not been established yet.
 StableBigPicture := -1
@@ -204,6 +206,7 @@ ApplyProfile(profileKey, reason, force := false) {
     global MULTI_MONITOR_TOOL, DESKTOP_PROFILE, TV_PROFILE, LOG_FILE
     global AppliedProfile, SwitchInProgress, RetryCount
     global MAX_RETRIES, RETRY_DELAY_MS
+    global DISPLAY_VERIFY_TIMEOUT_MS
 
     if (!force && profileKey = AppliedProfile) {
         Log(Format("Skipped {1} profile; it is already the last successfully applied profile.",
@@ -237,6 +240,28 @@ ApplyProfile(profileKey, reason, force := false) {
         if (exitCode != 0)
             throw Error(Format("MultiMonitorTool exited with code {1}.", exitCode))
 
+        mismatch := ""
+        if (!WaitForDisplayProfile(profilePath, DISPLAY_VERIFY_TIMEOUT_MS, &mismatch)) {
+            Log(Format("{1} profile command returned success, but the live topology did not match: {2}",
+                profileKey, mismatch), "WARN")
+            WakeDisplaysForProfileRetry(profileKey)
+
+            exitCode := RunWait(commandLine, A_ScriptDir, "Hide")
+            if (exitCode != 0) {
+                throw Error(Format(
+                    "MultiMonitorTool exited with code {1} after the native display wake-up.",
+                    exitCode))
+            }
+
+            mismatch := ""
+            if (!WaitForDisplayProfile(profilePath, DISPLAY_VERIFY_TIMEOUT_MS, &mismatch)) {
+                throw Error(Format(
+                    "Windows still did not adopt the requested topology after the native display wake-up: {1}",
+                    mismatch))
+            }
+            Log(Format("{1} profile recovered after the native display wake-up.", profileKey))
+        }
+
         AppliedProfile := profileKey
         RetryCount := 0
         SetTimer RetryCurrentProfile, 0
@@ -247,6 +272,171 @@ ApplyProfile(profileKey, reason, force := false) {
         return false
     } finally {
         SwitchInProgress := false
+    }
+}
+
+WakeDisplaysForProfileRetry(profileKey) {
+    global DISPLAY_WAKE_SETTLE_MS
+
+    displaySwitch := A_WinDir "\System32\DisplaySwitch.exe"
+    if (!FileExist(displaySwitch))
+        throw Error(Format("Windows DisplaySwitch.exe was not found at: {1}", displaySwitch))
+
+    Log(Format(
+        "Waking connected displays with DisplaySwitch.exe /extend before retrying {1} profile.",
+        profileKey), "WARN")
+    exitCode := RunWait(Format('"{1}" /extend', displaySwitch), A_ScriptDir, "Hide")
+    if (exitCode != 0)
+        throw Error(Format("DisplaySwitch.exe /extend exited with code {1}.", exitCode))
+    Sleep DISPLAY_WAKE_SETTLE_MS
+}
+
+WaitForDisplayProfile(profilePath, timeoutMs, &detail) {
+    startTick := A_TickCount
+    detail := "The display state could not be read."
+
+    loop {
+        try {
+            if (DisplayProfileMatches(profilePath, &detail))
+                return true
+        } catch as errorObject {
+            detail := errorObject.Message
+        }
+
+        if (ElapsedMilliseconds(startTick) >= timeoutMs)
+            return false
+        Sleep 400
+    }
+}
+
+DisplayProfileMatches(profilePath, &detail) {
+    expected := ReadExpectedActiveMonitor(profilePath)
+    rows := ReadCurrentMonitorRows()
+    if (rows.Length = 0) {
+        detail := "MultiMonitorTool returned no live monitor rows."
+        return false
+    }
+
+    activeCount := 0
+    targetRow := ""
+    for row in rows {
+        if (!row.Has("Active") || StrLower(row["Active"]) != "yes")
+            continue
+        activeCount += 1
+        if (row.Has("Monitor ID")
+            && StrLower(row["Monitor ID"]) = StrLower(expected["MonitorID"])) {
+            targetRow := row
+        }
+    }
+
+    if (activeCount != 1) {
+        detail := Format("Expected one active display, but Windows reports {1}.", activeCount)
+        return false
+    }
+    if (!IsObject(targetRow)) {
+        detail := Format("The expected monitor is not active: {1}", expected["MonitorID"])
+        return false
+    }
+    if (!targetRow.Has("Primary") || StrLower(targetRow["Primary"]) != "yes") {
+        detail := "The expected monitor is active but is not primary."
+        return false
+    }
+
+    resolution := targetRow.Has("Resolution") ? targetRow["Resolution"] : ""
+    if (!RegExMatch(resolution, "i)^\s*(\d+)\s*x\s*(\d+)\s*$", &modeMatch)
+        || modeMatch[1] + 0 != expected["Width"]
+        || modeMatch[2] + 0 != expected["Height"]) {
+        detail := Format("Expected {1}x{2}, but Windows reports {3}.",
+            expected["Width"], expected["Height"], resolution = "" ? "an unknown resolution" : resolution)
+        return false
+    }
+
+    frequency := targetRow.Has("Frequency") ? targetRow["Frequency"] + 0 : 0
+    if (frequency != expected["Frequency"]) {
+        detail := Format("Expected {1} Hz, but Windows reports {2} Hz.",
+            expected["Frequency"], frequency)
+        return false
+    }
+
+    detail := "Topology, primary display, resolution, and refresh rate match."
+    return true
+}
+
+ReadExpectedActiveMonitor(profilePath) {
+    activeMonitors := []
+    missing := "{SteamBPM-Missing}"
+    index := 0
+
+    loop 64 {
+        section := "Monitor" index
+        monitorId := IniRead(profilePath, section, "MonitorID", missing)
+        monitorName := IniRead(profilePath, section, "Name", missing)
+        if (monitorId = missing && monitorName = missing)
+            break
+
+        bitsPerPixel := IniRead(profilePath, section, "BitsPerPixel", "0") + 0
+        width := IniRead(profilePath, section, "Width", "0") + 0
+        height := IniRead(profilePath, section, "Height", "0") + 0
+        frequency := IniRead(profilePath, section, "DisplayFrequency", "0") + 0
+        if (bitsPerPixel > 0 && width > 0 && height > 0) {
+            if (monitorId = missing || monitorId = "")
+                throw Error(Format("Active section {1} has no stable MonitorID.", section))
+            activeMonitors.Push(Map(
+                "MonitorID", monitorId,
+                "Width", width,
+                "Height", height,
+                "Frequency", frequency))
+        }
+        index += 1
+    }
+
+    if (activeMonitors.Length != 1) {
+        throw Error(Format(
+            "Profile verification requires exactly one active display; the profile contains {1}.",
+            activeMonitors.Length))
+    }
+    return activeMonitors[1]
+}
+
+ReadCurrentMonitorRows() {
+    global MULTI_MONITOR_TOOL
+
+    rows := []
+    processId := DllCall("GetCurrentProcessId", "UInt")
+    exportPath := Format("{1}\SteamBPM-Monitors-{2}-{3}.tsv", A_Temp, processId, A_TickCount)
+    commandLine := Format('"{1}" /SaveFileEncoding 2 /stab "{2}"',
+        MULTI_MONITOR_TOOL, exportPath)
+
+    try {
+        exitCode := RunWait(commandLine, A_ScriptDir, "Hide")
+        if (exitCode != 0 || !FileExist(exportPath)) {
+            throw Error(Format(
+                "MultiMonitorTool could not export the live monitor state (exit code {1}).",
+                exitCode))
+        }
+
+        lines := StrSplit(FileRead(exportPath), "`n", "`r")
+        if (lines.Length < 2)
+            return rows
+        headers := StrSplit(lines[1], "`t")
+
+        loop lines.Length - 1 {
+            line := lines[A_Index + 1]
+            if (line = "")
+                continue
+            values := StrSplit(line, "`t")
+            row := Map()
+            for index, header in headers {
+                if (header != "")
+                    row[header] := index <= values.Length ? values[index] : ""
+            }
+            if (row.Has("Monitor ID") && row["Monitor ID"] != "")
+                rows.Push(row)
+        }
+        return rows
+    } finally {
+        if (FileExist(exportPath))
+            try FileDelete exportPath
     }
 }
 

@@ -23,6 +23,9 @@ setup.
 - Debounces transitions and never reapplies a profile on every watchdog check.
 - Recovers after Steam crashes and after missed Windows shell events.
 - Logs every confirmed transition and profile/audio action.
+- Verifies the live topology after MultiMonitorTool returns instead of trusting
+  its exit code alone. If Windows ignores a profile, the watcher wakes connected
+  outputs with the native `DisplaySwitch.exe /extend` command and retries once.
 - Runs as the signed-in user without administrator privileges.
 
 ## Quick start
@@ -220,6 +223,13 @@ per transition. If switching is reliable but flickers excessively, carefully
 reduce `MonitorsConfigNumOfCalls` in `Tools\MultiMonitorTool.cfg` from the default
 5 to 3 and retest both directions.
 
+Some GPU/USB-C combinations return exit code 0 while leaving the previous
+single-display topology unchanged. The watcher detects this by exporting the
+live monitor state and comparing the active monitor ID, primary state,
+resolution, and refresh rate with the requested profile. Only after a mismatch
+does it briefly use Windows' native `/extend` topology to wake the outputs and
+then reapply the requested single-display profile.
+
 ## Troubleshooting
 
 - **No switch:** Check the exact paths in the file layout and open the watcher
@@ -258,4 +268,3 @@ with a temporary official AutoHotkey v2 runtime. It never applies a display or
 audio profile in CI.
 
 Contributions are welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
-
