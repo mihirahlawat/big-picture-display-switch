@@ -7,8 +7,8 @@
   and retrying the requested profile.
 - Add configurable External, Extend, and None recovery modes; External keeps a
   laptop panel off when switching between two external displays.
-- Preserve and restore the normal Steam desktop window rectangle around Big
-  Picture transitions, clamped to the desktop monitor's work area.
+- Preserve and restore Steam's native maximized state and normal restore bounds
+  around Big Picture transitions, clamped to the desktop monitor's work area.
 
 ## 0.2.0 - 2026-08-27
 

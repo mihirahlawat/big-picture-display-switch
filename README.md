@@ -26,8 +26,9 @@ setup.
 - Verifies the live topology after MultiMonitorTool returns instead of trusting
   its exit code alone. If Windows ignores a profile, the watcher uses the chosen
   native Windows wake topology and retries once.
-- Preserves the normal Steam desktop window rectangle before Big Picture and
-  restores it within the desktop monitor's work area afterward.
+- Preserves Steam's native window placement before Big Picture—including its
+  maximized state and hidden restore bounds—and restores it within the desktop
+  monitor's work area afterward.
 - Runs as the signed-in user without administrator privileges.
 
 ## Quick start

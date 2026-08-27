@@ -89,6 +89,8 @@ InitializeWatcher(*) {
     stateName := StableBigPicture ? "Big Picture" : "desktop"
     Log(Format("Initial Steam state: {1}.", stateName))
     ApplyProfileForCurrentState("startup")
+    if (!StableBigPicture)
+        CaptureSteamDesktopWindowPlacement()
     SetTimer WatchdogCheck, WATCHDOG_MS
 }
 
@@ -123,6 +125,8 @@ EvaluateState(trigger) {
     observed := IsBigPictureOpen() ? 1 : 0
 
     if (observed = StableBigPicture) {
+        if (!observed)
+            CaptureSteamDesktopWindowPlacement()
         if (CandidateState != -1) {
             Log(Format("Unconfirmed {1} transition cleared.",
                 CandidateState ? "Big Picture entry" : "Big Picture exit"))
@@ -186,8 +190,6 @@ ApplyProfileForCurrentState(reason, force := false) {
     global StableBigPicture, AudioRetryCount
 
     if (StableBigPicture) {
-        if (InStr(reason, "transition 0->1"))
-            CaptureSteamDesktopWindowPlacement()
         ; Snapshot before the display switch can make Windows automatically pick
         ; the HDMI endpoint. An existing snapshot is never overwritten.
         audioSnapshotReady := CaptureDesktopAudioDefaults()
@@ -348,21 +350,16 @@ CaptureSteamDesktopWindowPlacement() {
 
     selector := "ahk_id " windowHandle
     try {
-        WinGetPos &x, &y, &width, &height, selector
+        placement := GetSteamWindowPlacement(windowHandle)
+        width := placement["Right"] - placement["Left"]
+        height := placement["Bottom"] - placement["Top"]
         if (width <= 0 || height <= 0)
             return false
-        SteamDesktopPlacement := Map(
-            "X", x,
-            "Y", y,
-            "Width", width,
-            "Height", height,
-            "State", WinGetMinMax(selector))
-        Log(Format("Captured Steam desktop window placement: {1}x{2} at {3},{4}.",
-            width, height, x, y))
+        SteamDesktopPlacement := placement
         return true
     } catch as errorObject {
-        Log(Format("Could not capture the Steam desktop window placement: {1}",
-            errorObject.Message), "WARN")
+        Log(Format("Could not capture the Steam desktop window placement: {1} (line {2})",
+            errorObject.Message, errorObject.Line), "WARN")
         return false
     }
 }
@@ -376,50 +373,90 @@ RestoreOrClampSteamDesktopWindow(*) {
 
     selector := "ahk_id " windowHandle
     try {
-        WinGetPos &currentX, &currentY, &currentWidth, &currentHeight, selector
-        if (currentWidth <= 0 || currentHeight <= 0)
+        placement := IsObject(SteamDesktopPlacement)
+            ? SteamDesktopPlacement.Clone()
+            : GetSteamWindowPlacement(windowHandle)
+        desiredX := placement["Left"]
+        desiredY := placement["Top"]
+        desiredWidth := placement["Right"] - placement["Left"]
+        desiredHeight := placement["Bottom"] - placement["Top"]
+        if (desiredWidth <= 0 || desiredHeight <= 0)
             return false
-
-        if (IsObject(SteamDesktopPlacement)) {
-            desiredX := SteamDesktopPlacement["X"]
-            desiredY := SteamDesktopPlacement["Y"]
-            desiredWidth := SteamDesktopPlacement["Width"]
-            desiredHeight := SteamDesktopPlacement["Height"]
-            previousState := SteamDesktopPlacement["State"]
-        } else {
-            desiredX := currentX
-            desiredY := currentY
-            desiredWidth := currentWidth
-            desiredHeight := currentHeight
-            previousState := WinGetMinMax(selector)
-        }
 
         primaryMonitor := MonitorGetPrimary()
         MonitorGetWorkArea primaryMonitor, &workLeft, &workTop, &workRight, &workBottom
         workWidth := workRight - workLeft
         workHeight := workBottom - workTop
-        desiredWidth := Min(desiredWidth, workWidth)
-        desiredHeight := Min(desiredHeight, workHeight)
-        desiredX := Max(workLeft, Min(desiredX, workRight - desiredWidth))
-        desiredY := Max(workTop, Min(desiredY, workBottom - desiredHeight))
-
-        if (previousState = 1) {
-            WinMaximize selector
-            return true
+        if (desiredWidth > workWidth || desiredHeight > workHeight) {
+            ; A 4K restore rectangle should not become a borderless-looking
+            ; 1440p normal window. Use a centered, clearly windowed fallback.
+            desiredWidth := Round(workWidth * 0.8)
+            desiredHeight := Round(workHeight * 0.8)
+            desiredX := workLeft + Floor((workWidth - desiredWidth) / 2)
+            desiredY := workTop + Floor((workHeight - desiredHeight) / 2)
+        } else {
+            desiredX := Max(workLeft, Min(desiredX, workRight - desiredWidth))
+            desiredY := Max(workTop, Min(desiredY, workBottom - desiredHeight))
         }
 
-        if (currentX != desiredX || currentY != desiredY
-            || currentWidth != desiredWidth || currentHeight != desiredHeight) {
-            WinMove desiredX, desiredY, desiredWidth, desiredHeight, selector
-            Log(Format("Restored Steam desktop window to {1}x{2} at {3},{4}.",
-                desiredWidth, desiredHeight, desiredX, desiredY))
-        }
+        placement["Left"] := desiredX
+        placement["Top"] := desiredY
+        placement["Right"] := desiredX + desiredWidth
+        placement["Bottom"] := desiredY + desiredHeight
+        wasVisible := (WinGetStyle(selector) & 0x10000000) != 0
+        SetSteamWindowPlacement(windowHandle, placement)
+        if (!wasVisible)
+            WinHide selector
+        Log(Format(
+            "Restored Steam window placement: state {1}, normal bounds {2}x{3} at {4},{5}.",
+            placement["ShowCmd"], desiredWidth, desiredHeight, desiredX, desiredY))
         return true
     } catch as errorObject {
-        Log(Format("Could not restore the Steam desktop window placement: {1}",
-            errorObject.Message), "WARN")
+        Log(Format("Could not restore the Steam desktop window placement: {1} (line {2})",
+            errorObject.Message, errorObject.Line), "WARN")
         return false
     }
+}
+
+GetSteamWindowPlacement(windowHandle) {
+    global A_LastError
+
+    ; WINDOWPLACEMENT contains only 32-bit integers and is 44 bytes on x86/x64.
+    placementBuffer := Buffer(44, 0)
+    NumPut("UInt", placementBuffer.Size, placementBuffer, 0)
+    if (!DllCall("GetWindowPlacement", "Ptr", windowHandle, "Ptr", placementBuffer.Ptr, "Int"))
+        throw Error(Format("GetWindowPlacement failed with Win32 error {1}.", A_LastError))
+
+    return Map(
+        "Flags", NumGet(placementBuffer, 4, "UInt"),
+        "ShowCmd", NumGet(placementBuffer, 8, "UInt"),
+        "MinX", NumGet(placementBuffer, 12, "Int"),
+        "MinY", NumGet(placementBuffer, 16, "Int"),
+        "MaxX", NumGet(placementBuffer, 20, "Int"),
+        "MaxY", NumGet(placementBuffer, 24, "Int"),
+        "Left", NumGet(placementBuffer, 28, "Int"),
+        "Top", NumGet(placementBuffer, 32, "Int"),
+        "Right", NumGet(placementBuffer, 36, "Int"),
+        "Bottom", NumGet(placementBuffer, 40, "Int"))
+}
+
+SetSteamWindowPlacement(windowHandle, placement) {
+    global A_LastError
+
+    placementBuffer := Buffer(44, 0)
+    NumPut("UInt", placementBuffer.Size, placementBuffer, 0)
+    NumPut("UInt", placement["Flags"], placementBuffer, 4)
+    NumPut("UInt", placement["ShowCmd"], placementBuffer, 8)
+    NumPut("Int", placement["MinX"], placementBuffer, 12)
+    NumPut("Int", placement["MinY"], placementBuffer, 16)
+    NumPut("Int", placement["MaxX"], placementBuffer, 20)
+    NumPut("Int", placement["MaxY"], placementBuffer, 24)
+    NumPut("Int", placement["Left"], placementBuffer, 28)
+    NumPut("Int", placement["Top"], placementBuffer, 32)
+    NumPut("Int", placement["Right"], placementBuffer, 36)
+    NumPut("Int", placement["Bottom"], placementBuffer, 40)
+    if (!DllCall("SetWindowPlacement", "Ptr", windowHandle, "Ptr", placementBuffer.Ptr, "Int"))
+        throw Error(Format("SetWindowPlacement failed with Win32 error {1}.", A_LastError))
 }
 
 WaitForDisplayProfile(profilePath, timeoutMs, &detail) {
