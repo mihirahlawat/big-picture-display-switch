@@ -90,9 +90,11 @@ function Write-Configuration {
         [string]$TvDeviceLabel
     )
 
+    $tvPrimaryFirst = (Get-IniValue -Section 'Display' -Key 'TvPrimaryFirst' -Default '0') -eq '1'
     $contents = @(
         '[Display]',
         ('WakeMode={0}' -f $WakeMode),
+        ('TvPrimaryFirst={0}' -f [int]$tvPrimaryFirst),
         '',
         '[Audio]',
         ('Enabled={0}' -f $AudioEnabled),

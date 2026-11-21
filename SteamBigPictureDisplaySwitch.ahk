@@ -17,6 +17,7 @@ AUDIO_ENABLED      := IniRead(CONFIG_FILE, "Audio", "Enabled", "0") = "1"
 TV_AUDIO_DEVICE_ID := IniRead(CONFIG_FILE, "Audio", "TvDeviceId", "")
 TV_AUDIO_LABEL     := IniRead(CONFIG_FILE, "Audio", "TvDeviceLabel", "TV audio")
 DISPLAY_WAKE_MODE  := StrLower(IniRead(CONFIG_FILE, "Display", "WakeMode", "External"))
+TV_PRIMARY_FIRST   := IniRead(CONFIG_FILE, "Display", "TvPrimaryFirst", "0") = "1"
 
 BIG_PICTURE_EXE    := "steamwebhelper.exe"
 BIG_PICTURE_CLASS  := "SDL_app"
@@ -219,7 +220,7 @@ ApplyProfile(profileKey, reason, force := false) {
     global MULTI_MONITOR_TOOL, DESKTOP_PROFILE, TV_PROFILE, LOG_FILE
     global AppliedProfile, SwitchInProgress, RetryCount
     global MAX_RETRIES, RETRY_DELAY_MS
-    global DISPLAY_VERIFY_TIMEOUT_MS
+    global DISPLAY_VERIFY_TIMEOUT_MS, TV_PRIMARY_FIRST
 
     if (!force && profileKey = AppliedProfile) {
         Log(Format("Skipped {1} profile; it is already the last successfully applied profile.",
@@ -248,6 +249,9 @@ ApplyProfile(profileKey, reason, force := false) {
     SwitchInProgress := true
     try {
         Log(Format("Applying {1} profile ({2}).", profileKey, reason))
+        stageTvPrimary := profileKey = "TV" && TV_PRIMARY_FIRST
+        if (stageTvPrimary)
+            PrepareTvPrimary(profilePath)
         commandLine := Format('"{1}" /LoadConfig "{2}"', MULTI_MONITOR_TOOL, profilePath)
         exitCode := RunWait(commandLine, A_ScriptDir, "Hide")
         if (exitCode != 0)
@@ -257,7 +261,9 @@ ApplyProfile(profileKey, reason, force := false) {
         if (!WaitForDisplayProfile(profilePath, DISPLAY_VERIFY_TIMEOUT_MS, &mismatch)) {
             Log(Format("{1} profile command returned success, but the live topology did not match: {2}",
                 profileKey, mismatch), "WARN")
-            WakeDisplaysForProfileRetry(profileKey)
+            WakeDisplays(Format("before retrying the {1} profile", profileKey))
+            if (stageTvPrimary)
+                PrepareTvPrimary(profilePath, false)
 
             exitCode := RunWait(commandLine, A_ScriptDir, "Hide")
             if (exitCode != 0) {
@@ -288,7 +294,56 @@ ApplyProfile(profileKey, reason, force := false) {
     }
 }
 
-WakeDisplaysForProfileRetry(profileKey) {
+PrepareTvPrimary(profilePath, wake := true) {
+    global MULTI_MONITOR_TOOL, DESKTOP_PROFILE, DISPLAY_WAKE_MODE, DISPLAY_VERIFY_TIMEOUT_MS
+
+    try {
+        tv := ReadExpectedActiveMonitor(profilePath)
+        desktop := ReadExpectedActiveMonitor(DESKTOP_PROFILE)
+        tvId := tv["MonitorID"]
+        desktopId := desktop["MonitorID"]
+        if (StrLower(tvId) = StrLower(desktopId))
+            return
+
+        if (wake && DISPLAY_WAKE_MODE != "none")
+            WakeDisplays("before making the TV primary", "INFO")
+
+        active := Map()
+        active.CaseSense := false
+        for row in ReadCurrentMonitorRows() {
+            if (row.Has("Active") && StrLower(row["Active"]) = "yes")
+                active[row["Monitor ID"]] := true
+        }
+        if (!active.Has(desktopId))
+            EnableMonitorBesidePrimary(desktopId, tv["Width"])
+        if (!active.Has(tvId))
+            EnableMonitorBesidePrimary(tvId, desktop["Width"])
+
+        commandLine := Format('"{1}" /SetPrimary "{2}"', MULTI_MONITOR_TOOL, tvId)
+        exitCode := RunWait(commandLine, A_ScriptDir, "Hide")
+        if (exitCode != 0)
+            throw Error(Format("MultiMonitorTool /SetPrimary exited with code {1}.", exitCode))
+
+        if (!WaitForDisplayProfile(profilePath, DISPLAY_VERIFY_TIMEOUT_MS, &detail, desktopId))
+            throw Error(detail)
+        Log("TV is primary with the desktop monitor still active.")
+    } catch as errorObject {
+        Log(Format("Could not make the TV primary ahead of the TV-only profile: {1}",
+            errorObject.Message), "WARN")
+    }
+}
+
+EnableMonitorBesidePrimary(monitorId, offsetX) {
+    global MULTI_MONITOR_TOOL
+
+    commandLine := Format('"{1}" /EnableAtPosition "{2}" {3} 0',
+        MULTI_MONITOR_TOOL, monitorId, offsetX)
+    exitCode := RunWait(commandLine, A_ScriptDir, "Hide")
+    if (exitCode != 0)
+        throw Error(Format("MultiMonitorTool /EnableAtPosition exited with code {1}.", exitCode))
+}
+
+WakeDisplays(reason, level := "WARN") {
     global DISPLAY_WAKE_SETTLE_MS, DISPLAY_WAKE_MODE
 
     displaySwitch := A_WinDir "\System32\DisplaySwitch.exe"
@@ -303,7 +358,7 @@ WakeDisplaysForProfileRetry(profileKey) {
             topologyArgument := "/extend"
             topologyDescription := "all connected displays"
         case "none":
-            throw Error("The display wake-up fallback is disabled in Config.ini.")
+            throw Error("Display wake-up is disabled in Config.ini.")
         default:
             throw Error(Format(
                 "Unknown Display WakeMode '{1}'. Use External, Extend, or None.",
@@ -311,8 +366,8 @@ WakeDisplaysForProfileRetry(profileKey) {
     }
 
     Log(Format(
-        "Waking {1} with DisplaySwitch.exe {2} before retrying {3} profile.",
-        topologyDescription, topologyArgument, profileKey), "WARN")
+        "Waking {1} with DisplaySwitch.exe {2} {3}.",
+        topologyDescription, topologyArgument, reason), level)
     exitCode := RunWait(Format('"{1}" {2}', displaySwitch, topologyArgument),
         A_ScriptDir, "Hide")
     if (exitCode != 0)
@@ -459,13 +514,13 @@ SetSteamWindowPlacement(windowHandle, placement) {
         throw Error(Format("SetWindowPlacement failed with Win32 error {1}.", A_LastError))
 }
 
-WaitForDisplayProfile(profilePath, timeoutMs, &detail) {
+WaitForDisplayProfile(profilePath, timeoutMs, &detail, secondaryMonitorId := "") {
     startTick := A_TickCount
     detail := "The display state could not be read."
 
     loop {
         try {
-            if (DisplayProfileMatches(profilePath, &detail))
+            if (DisplayProfileMatches(profilePath, &detail, secondaryMonitorId))
                 return true
         } catch as errorObject {
             detail := errorObject.Message
@@ -477,7 +532,7 @@ WaitForDisplayProfile(profilePath, timeoutMs, &detail) {
     }
 }
 
-DisplayProfileMatches(profilePath, &detail) {
+DisplayProfileMatches(profilePath, &detail, secondaryMonitorId := "") {
     expected := ReadExpectedActiveMonitor(profilePath)
     rows := ReadCurrentMonitorRows()
     if (rows.Length = 0) {
@@ -487,17 +542,19 @@ DisplayProfileMatches(profilePath, &detail) {
 
     activeCount := 0
     targetRow := ""
+    secondaryActive := false
     for row in rows {
         if (!row.Has("Active") || StrLower(row["Active"]) != "yes")
             continue
         activeCount += 1
-        if (row.Has("Monitor ID")
-            && StrLower(row["Monitor ID"]) = StrLower(expected["MonitorID"])) {
+        monitorId := StrLower(row["Monitor ID"])
+        if (monitorId = StrLower(expected["MonitorID"]))
             targetRow := row
-        }
+        if (monitorId = StrLower(secondaryMonitorId))
+            secondaryActive := true
     }
 
-    if (activeCount != 1) {
+    if (secondaryMonitorId = "" && activeCount != 1) {
         detail := Format("Expected one active display, but Windows reports {1}.", activeCount)
         return false
     }
@@ -508,6 +565,14 @@ DisplayProfileMatches(profilePath, &detail) {
     if (!targetRow.Has("Primary") || StrLower(targetRow["Primary"]) != "yes") {
         detail := "The expected monitor is active but is not primary."
         return false
+    }
+    if (secondaryMonitorId != "") {
+        if (!secondaryActive) {
+            detail := Format("The desktop monitor is not active: {1}", secondaryMonitorId)
+            return false
+        }
+        detail := "The TV is primary and the desktop monitor is still active."
+        return true
     }
 
     resolution := targetRow.Has("Resolution") ? targetRow["Resolution"] : ""

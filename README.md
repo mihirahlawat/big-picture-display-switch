@@ -57,7 +57,7 @@ choices.
 
 MultiMonitorTool can occasionally return exit code 0 even though Windows leaves
 the previous single-display topology active. The watcher verifies the result and
-uses the configured `[Display] WakeMode` only after such a mismatch:
+uses the configured `[Display] WakeMode` after such a mismatch:
 
 - `External` runs `DisplaySwitch.exe /external`, briefly enabling external
   outputs while keeping a laptop/internal panel disabled. This is the recommended
@@ -154,6 +154,13 @@ every display reports a unique, nonblank EDID serial, serial-number matching can
 also be enabled. The watcher never references `DISPLAY1`, `DISPLAY2`, or
 `DISPLAY3` itself.
 
+For games that start with a black picture and audio after a direct switch to
+the TV, set `TvPrimaryFirst=1` under `[Display]` in `Config.ini` and restart
+the watcher. It wakes the outputs allowed by `WakeMode`, makes the TV primary
+while the other display is still active, then applies the usual TV-only profile.
+Use `External` if both displays are external, or `Extend` if either is an
+internal panel. Wait for the TV switch to finish before launching the game.
+
 Before testing, set **Steam Big Picture > Settings > Display > Preferred
 Display** to **None**. Steam's own preferred-display feature changes the Windows
 primary display and can race with the saved profiles.
@@ -243,15 +250,15 @@ GPU-driver updates. If those settings do not survive, use
 comprehensive profile backend; the Big Picture state machine can stay the same.
 
 MultiMonitorTool 2.15 and newer internally applies configurations multiple times
-to work around Windows 11 24H2 failures. This watcher still invokes it only once
-per transition. If switching is reliable but flickers excessively, carefully
-reduce `MonitorsConfigNumOfCalls` in `Tools\MultiMonitorTool.cfg` from the default
-5 to 3 and retest both directions.
+to work around Windows 11 24H2 failures. The watcher retries a load when the
+live topology fails verification. If switching is reliable but flickers
+excessively, carefully reduce `MonitorsConfigNumOfCalls` in
+`Tools\MultiMonitorTool.cfg` from the default 5 to 3 and retest both directions.
 
 Some GPU/USB-C combinations return exit code 0 while leaving the previous
 single-display topology unchanged. The watcher detects this by exporting the
 live monitor state and comparing the active monitor ID, primary state,
-resolution, and refresh rate with the requested profile. Only after a mismatch
+resolution, and refresh rate with the requested profile. After a mismatch
 does it briefly use the configured native Windows wake topology and then reapply
 the requested single-display profile.
 
